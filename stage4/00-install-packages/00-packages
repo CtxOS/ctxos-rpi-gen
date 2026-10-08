@@ -1,6 +1,18 @@
-rpd-applications
-rpd-developer
-rpd-graphics
-rpd-utilities
-rpd-wayland-extras
-rpd-x-extras
+wf-panel-pi-
+python3-pygame
+python3-tk thonny
+python3-pgzero
+python3-serial
+raspberrypi-net-mods
+python3-pip
+python3-numpy
+tree
+libgl1-mesa-dri libgles1
+piclone
+python3-twython
+python3-flask
+pprompt
+piwiz
+ffmpeg
+vlc
+rpi-imager

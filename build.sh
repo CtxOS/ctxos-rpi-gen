@@ -21,8 +21,13 @@ EOF
 			PACKAGES="$(sed -f "${SCRIPT_DIR}/remove-comments.sed" < "${i}-packages-nr")"
 			if [ -n "$PACKAGES" ]; then
 				on_chroot << EOF
-apt-get -o Acquire::Retries=3 install --no-install-recommends -y $PACKAGES
+apt-get -o Acquire::Retries=3 -o DPkg::Options::="--force-confnew" install --no-install-recommends -y $PACKAGES
 EOF
+				if [ "${USE_QCOW2}" = "1" ]; then
+					on_chroot << EOF
+apt-get clean
+EOF
+				fi
 			fi
 			log "End ${SUB_STAGE_DIR}/${i}-packages-nr"
 		fi
@@ -31,8 +36,13 @@ EOF
 			PACKAGES="$(sed -f "${SCRIPT_DIR}/remove-comments.sed" < "${i}-packages")"
 			if [ -n "$PACKAGES" ]; then
 				on_chroot << EOF
-apt-get -o Acquire::Retries=3 install -y $PACKAGES
+apt-get -o Acquire::Retries=3 -o DPkg::Options::="--force-confnew" install -y $PACKAGES
 EOF
+				if [ "${USE_QCOW2}" = "1" ]; then
+					on_chroot << EOF
+apt-get clean
+EOF
+				fi
 			fi
 			log "End ${SUB_STAGE_DIR}/${i}-packages"
 		fi
@@ -68,8 +78,6 @@ EOF
 			log "Begin ${SUB_STAGE_DIR}/${i}-run.sh"
 			./${i}-run.sh
 			log "End ${SUB_STAGE_DIR}/${i}-run.sh"
-		elif [ -f ${i}-run.sh ]; then
-			log "Skip ${SUB_STAGE_DIR}/${i}-run.sh (not executable)"
 		fi
 		if [ -f ${i}-run-chroot.sh ]; then
 			log "Begin ${SUB_STAGE_DIR}/${i}-run-chroot.sh"
@@ -91,7 +99,16 @@ run_stage(){
 	STAGE_WORK_DIR="${WORK_DIR}/${STAGE}"
 	ROOTFS_DIR="${STAGE_WORK_DIR}"/rootfs
 
-	unmount "${WORK_DIR}/${STAGE}"
+	if [ "${USE_QCOW2}" = "1" ]; then
+		if [ ! -f SKIP ]; then
+			load_qimage
+		fi
+	else
+		# make sure we are not umounting during export-image stage
+		if [ "${USE_QCOW2}" = "0" ] && [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+			unmount "${WORK_DIR}/${STAGE}"
+		fi
+	fi
 
 	if [ ! -f SKIP_IMAGES ]; then
 		if [ -f "${STAGE_DIR}/EXPORT_IMAGE" ]; then
@@ -99,7 +116,7 @@ run_stage(){
 		fi
 	fi
 	if [ ! -f SKIP ]; then
-		if [ "${CLEAN}" = "1" ]; then
+		if [ "${CLEAN}" = "1" ] && [ "${USE_QCOW2}" = "0" ] ; then
 			if [ -d "${ROOTFS_DIR}" ]; then
 				rm -rf "${ROOTFS_DIR}"
 			fi
@@ -116,30 +133,20 @@ run_stage(){
 		done
 	fi
 
-	unmount "${WORK_DIR}/${STAGE}"
+	if [ "${USE_QCOW2}" = "1" ]; then
+		unload_qimage
+	else
+		# make sure we are not umounting during export-image stage
+		if [ "${USE_QCOW2}" = "0" ] && [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+			unmount "${WORK_DIR}/${STAGE}"
+		fi
+	fi
 
 	PREV_STAGE="${STAGE}"
 	PREV_STAGE_DIR="${STAGE_DIR}"
 	PREV_ROOTFS_DIR="${ROOTFS_DIR}"
 	popd > /dev/null
 	log "End ${STAGE_DIR}"
-}
-
-term() {
-	if [ "$?" -ne 0 ]; then
-		log "Build failed"
-	else
-		log "Build finished"
-	fi
-	if [ -n "${ARCH_TEST_DIR}" ]; then
-		rm -rf "${ARCH_TEST_DIR}"
-	fi
-	unmount "${STAGE_WORK_DIR}"
-	if [ "$STAGE" = "export-image" ]; then
-		for img in "${STAGE_WORK_DIR}/"*.img; do
-			unmount_image "$img"
-		done
-	fi
 }
 
 if [ "$(id -u)" != "0" ]; then
@@ -176,9 +183,17 @@ do
 	esac
 done
 
+term() {
+	if [ "${USE_QCOW2}" = "1" ]; then
+		log "Unloading image"
+		unload_qimage
+	fi
+}
+
+trap term EXIT INT TERM
+
 export PI_GEN=${PI_GEN:-pi-gen}
 export PI_GEN_REPO=${PI_GEN_REPO:-https://github.com/RPi-Distro/pi-gen}
-export PI_GEN_RELEASE=${PI_GEN_RELEASE:-Raspberry Pi reference}
 
 export ARCH=arm64
 export RELEASE=${RELEASE:-trixie} # Don't forget to update stage0/prerun.sh
@@ -210,7 +225,7 @@ export TARGET_HOSTNAME=${TARGET_HOSTNAME:-raspberrypi}
 export FIRST_USER_NAME=${FIRST_USER_NAME:-pi}
 export FIRST_USER_PASS
 export DISABLE_FIRST_BOOT_USER_RENAME=${DISABLE_FIRST_BOOT_USER_RENAME:-0}
-export PASSWORDLESS_SUDO="${PASSWORDLESS_SUDO:-0}"
+export RELEASE=${RELEASE:-bookworm} # Don't forget to update stage0/prerun.sh
 export WPA_COUNTRY
 export ENABLE_SSH="${ENABLE_SSH:-0}"
 export PUBKEY_ONLY_SSH="${PUBKEY_ONLY_SSH:-0}"
@@ -227,8 +242,8 @@ export GIT_HASH=${GIT_HASH:-"$(git rev-parse HEAD)"}
 export PUBKEY_SSH_FIRST_USER
 
 export CLEAN
+export IMG_NAME
 export APT_PROXY
-export TEMP_REPO
 
 export STAGE
 export STAGE_DIR
@@ -238,6 +253,8 @@ export PREV_STAGE_DIR
 export ROOTFS_DIR
 export PREV_ROOTFS_DIR
 export IMG_SUFFIX
+export NOOBS_NAME
+export NOOBS_DESCRIPTION
 export EXPORT_DIR
 export EXPORT_ROOTFS_DIR
 
@@ -246,50 +263,28 @@ export QUILT_NO_DIFF_INDEX=1
 export QUILT_NO_DIFF_TIMESTAMPS=1
 export QUILT_REFRESH_ARGS="-p ab"
 
-export ENABLE_CLOUD_INIT=${ENABLE_CLOUD_INIT:-1}
-
 # shellcheck source=scripts/common
 source "${SCRIPT_DIR}/common"
 # shellcheck source=scripts/dependencies_check
 source "${SCRIPT_DIR}/dependencies_check"
 
+export NO_PRERUN_QCOW2="${NO_PRERUN_QCOW2:-1}"
+export USE_QCOW2="${USE_QCOW2:-0}"
+export BASE_QCOW2_SIZE=${BASE_QCOW2_SIZE:-12G}
+source "${SCRIPT_DIR}/qcow2_handling"
+if [ "${USE_QCOW2}" = "1" ]; then
+	NO_PRERUN_QCOW2=1
+else
+	NO_PRERUN_QCOW2=0
+fi
+
+export NO_PRERUN_QCOW2="${NO_PRERUN_QCOW2:-1}"
+
 if [ "$SETFCAP" != "1" ]; then
 	export CAPSH_ARG="--drop=cap_setfcap"
 fi
 
-mkdir -p "${WORK_DIR}"
-unset ARCH_TEST_DIR
-trap term EXIT INT TERM
-
 dependencies_check "${BASE_DIR}/depends"
-
-
-PAGESIZE=$(getconf PAGESIZE)
-if [ "$ARCH" == "armhf" ] && [ "$PAGESIZE" != "4096" ]; then
-	echo
-	echo "ERROR: Building an $ARCH image requires a kernel with a 4k page size (current: $PAGESIZE)"
-	echo "On Raspberry Pi OS (64-bit), you can switch to a suitable kernel by adding the following to /boot/firmware/config.txt and rebooting:"
-	echo
-	echo "kernel=kernel8.img"
-	echo "initramfs initramfs8 followkernel"
-	echo
-	exit 1
-fi
-
-echo "Checking native $ARCH executable support..."
-if ! arch-test -n "$ARCH"; then
-	echo "WARNING: Only a native build environment is supported. Checking emulated support..."
-	# Test in an empty chroot: a binfmt_misc entry without the F flag works here
-	# but fails in every chroot the build makes
-	ARCH_TEST_DIR="$(mktemp -d)"
-	if ! arch-test -c "$ARCH_TEST_DIR" "$ARCH"; then
-		echo "No fallback mechanism found. Ensure your OS has binfmt_misc support enabled and configured."
-		echo "Install qemu-user-binfmt, or qemu-user-static if your distribution's qemu-user binaries are dynamically linked."
-		exit 1
-	fi
-	rm -rf "$ARCH_TEST_DIR"
-	unset ARCH_TEST_DIR
-fi
 
 #check username is valid
 if [[ ! "$FIRST_USER_NAME" =~ ^[a-z][-a-z0-9_]*$ ]]; then
@@ -323,17 +318,10 @@ if [[ "${PUBKEY_ONLY_SSH}" = "1" && -z "${PUBKEY_SSH_FIRST_USER}" ]]; then
 	exit 1
 fi
 
+mkdir -p "${WORK_DIR}"
 log "Begin ${BASE_DIR}"
 
 STAGE_LIST=${STAGE_LIST:-${BASE_DIR}/stage*}
-export STAGE_LIST
-
-EXPORT_CONFIG_DIR=$(realpath "${EXPORT_CONFIG_DIR:-"${BASE_DIR}/export-image"}")
-if [ ! -d "${EXPORT_CONFIG_DIR}" ]; then
-	echo "EXPORT_CONFIG_DIR invalid: ${EXPORT_CONFIG_DIR} does not exist"
-	exit 1
-fi
-export EXPORT_CONFIG_DIR
 
 for STAGE_DIR in $STAGE_LIST; do
 	STAGE_DIR=$(realpath "${STAGE_DIR}")
@@ -342,18 +330,102 @@ done
 
 CLEAN=1
 for EXPORT_DIR in ${EXPORT_DIRS}; do
-	STAGE_DIR=${EXPORT_CONFIG_DIR}
+	STAGE_DIR=${BASE_DIR}/export-image
 	# shellcheck source=/dev/null
 	source "${EXPORT_DIR}/EXPORT_IMAGE"
 	EXPORT_ROOTFS_DIR=${WORK_DIR}/$(basename "${EXPORT_DIR}")/rootfs
-	run_stage
+	if [ "${USE_QCOW2}" = "1" ]; then
+		USE_QCOW2=0
+		EXPORT_NAME="${IMG_FILENAME}${IMG_SUFFIX}"
+		echo "------------------------------------------------------------------------"
+		echo "Running export stage for ${EXPORT_NAME}"
+		rm -f "${WORK_DIR}/export-image/${EXPORT_NAME}.img" || true
+		rm -f "${WORK_DIR}/export-image/${EXPORT_NAME}.qcow2" || true
+		rm -f "${WORK_DIR}/${EXPORT_NAME}.img" || true
+		rm -f "${WORK_DIR}/${EXPORT_NAME}.qcow2" || true
+		EXPORT_STAGE=$(basename "${EXPORT_DIR}")
+		for s in $STAGE_LIST; do
+			TMP_LIST=${TMP_LIST:+$TMP_LIST }$(basename "${s}")
+		done
+		FIRST_STAGE=${TMP_LIST%% *}
+		FIRST_IMAGE="image-${FIRST_STAGE}.qcow2"
+
+		pushd "${WORK_DIR}" > /dev/null
+		echo "Creating new base "${EXPORT_NAME}.qcow2" from ${FIRST_IMAGE}"
+		cp "./${FIRST_IMAGE}" "${EXPORT_NAME}.qcow2"
+
+		ARR=($TMP_LIST)
+		# rebase stage images to new export base
+		for CURR_STAGE in "${ARR[@]}"; do
+			if [ "${CURR_STAGE}" = "${FIRST_STAGE}" ]; then
+				PREV_IMG="${EXPORT_NAME}"
+				continue
+			fi
+		echo "Rebasing image-${CURR_STAGE}.qcow2 onto ${PREV_IMG}.qcow2"
+			qemu-img rebase -f qcow2 -u -b ${PREV_IMG}.qcow2 image-${CURR_STAGE}.qcow2
+			if [ "${CURR_STAGE}" = "${EXPORT_STAGE}" ]; then
+				break
+			fi
+			PREV_IMG="image-${CURR_STAGE}"
+		done
+
+		# commit current export stage into base export image
+		echo "Committing image-${EXPORT_STAGE}.qcow2 to ${EXPORT_NAME}.qcow2"
+		qemu-img commit -f qcow2 -p -b "${EXPORT_NAME}.qcow2" image-${EXPORT_STAGE}.qcow2
+
+		# rebase stage images back to original first stage for easy re-run
+		for CURR_STAGE in "${ARR[@]}"; do
+			if [ "${CURR_STAGE}" = "${FIRST_STAGE}" ]; then
+				PREV_IMG="image-${CURR_STAGE}"
+				continue
+			fi
+		echo "Rebasing back image-${CURR_STAGE}.qcow2 onto ${PREV_IMG}.qcow2"
+			qemu-img rebase -f qcow2 -u -b ${PREV_IMG}.qcow2 image-${CURR_STAGE}.qcow2
+			if [ "${CURR_STAGE}" = "${EXPORT_STAGE}" ]; then
+				break
+			fi
+			PREV_IMG="image-${CURR_STAGE}"
+		done
+		popd > /dev/null
+
+		mkdir -p "${WORK_DIR}/export-image/rootfs"
+		mv "${WORK_DIR}/${EXPORT_NAME}.qcow2" "${WORK_DIR}/export-image/"
+		echo "Mounting image ${WORK_DIR}/export-image/${EXPORT_NAME}.qcow2 to rootfs ${WORK_DIR}/export-image/rootfs"
+		mount_qimage "${WORK_DIR}/export-image/${EXPORT_NAME}.qcow2" "${WORK_DIR}/export-image/rootfs"
+
+		CLEAN=0
+		run_stage
+		CLEAN=1
+		USE_QCOW2=1
+
+	else
+		run_stage
+	fi
+	if [ "${USE_QEMU}" != "1" ]; then
+		if [ -e "${EXPORT_DIR}/EXPORT_NOOBS" ]; then
+			# shellcheck source=/dev/null
+			source "${EXPORT_DIR}/EXPORT_NOOBS"
+			STAGE_DIR="${BASE_DIR}/export-noobs"
+			if [ "${USE_QCOW2}" = "1" ]; then
+				USE_QCOW2=0
+				run_stage
+				USE_QCOW2=1
+			else
+				run_stage
+			fi
+		fi
+	fi
 done
 
-if [ -x "${BASE_DIR}/postrun.sh" ]; then
+if [ -x postrun.sh ]; then
 	log "Begin postrun.sh"
 	cd "${BASE_DIR}"
 	./postrun.sh
 	log "End postrun.sh"
+fi
+
+if [ "${USE_QCOW2}" = "1" ]; then
+	unload_qimage
 fi
 
 log "End ${BASE_DIR}"

@@ -1,0 +1,5 @@
+# Parrot archive: full base system and Parrot packages (suite echo = Parrot 7)
+deb https://deb.parrot.sh/parrot echo main contrib non-free non-free-firmware
+#deb https://deb.parrot.sh/parrot echo-updates main contrib non-free non-free-firmware
+#deb https://deb.parrot.sh/parrot echo-security main contrib non-free non-free-firmware
+#deb https://deb.parrot.sh/parrot echo-backports main contrib non-free non-free-firmware
