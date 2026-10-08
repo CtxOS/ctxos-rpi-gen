@@ -1,2 +1,5 @@
-rpd-wayland-core
-rpd-x-core
+xserver-xorg xinit
+eom
+gvfs-backends gvfs-fuse
+lightdm
+gnome-keyring
