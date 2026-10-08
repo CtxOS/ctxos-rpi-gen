@@ -146,15 +146,12 @@ time ${DOCKER} run \
   pi-gen \
   bash -e -o pipefail -c "
     mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || true
-    # Use the host's arm64 registration if it works in here; otherwise register
-    # the image's own (static) qemu-aarch64 for the duration of the build, replacing
-    # any stale entry of ours. The newest entry is the one the kernel matches.
-    # Probe inside an empty chroot: a host entry without the F flag resolves its
-    # interpreter in the caller's filesystem, so it works in the container root
-    # but fails in every chroot the build makes.
-    if ! arch-test -c \"\$(mktemp -d)\" arm64; then
-      [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64-rpi ] || echo -1 > /proc/sys/fs/binfmt_misc/qemu-aarch64-rpi
-      echo ':qemu-aarch64-rpi:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64:F' > /proc/sys/fs/binfmt_misc/register
+    # Use the host's arm64 registration when it is visible in here: an entry
+    # with the F flag is passed on to every chroot, so it works everywhere.
+    # Only when it is absent register this image's own static qemu-aarch64 for
+    # the duration of the build, replacing any stale entry of ours.
+    if [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64-rpi ]; then
+      echo ':qemu-aarch64-rpi:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' > /proc/sys/fs/binfmt_misc/register
       trap 'echo -1 > /proc/sys/fs/binfmt_misc/qemu-aarch64-rpi' EXIT
     fi
     cd /pi-gen
